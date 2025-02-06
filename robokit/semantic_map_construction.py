@@ -7,10 +7,10 @@ import numpy as np
 import rospy
 from PIL import Image as PILImg
 
-import ros_numpy
+import cv2  # OpenCV 추가
+from cv_bridge import CvBridge  # ROS Image 변환을 위한 cv_bridge 추가
 import networkx as nx
 from networkx import Graph
-
 
 from sensor_msgs.msg import Image
 from robokit.perception import GroundingDINOObjectPredictor, SegmentAnythingPredictor
@@ -32,6 +32,7 @@ class robokitRealtime:
         # initialize a node
         rospy.init_node("seg_rgb")
 
+        self.bridge = CvBridge()  # cv_bridge 객체 생성
         self.listener = ImageListener(camera="Fetch")
 
         self.counter = 0
@@ -44,16 +45,12 @@ class robokitRealtime:
 
         self.image_pub = rospy.Publisher("seg_image", Image, queue_size=10)
         
-        # self.read_semantic_data()
         self.graph = Graph()
         self.pose_list = {"table":[], "chair":[], "door":[]}
-        self.threshold = {"table": 2, "chair":0.6
-                          , "door": 2}
+        self.threshold = {"table": 2, "chair":0.6, "door": 2}
         self.marker_pub = rospy.Publisher("graph_nodes", MarkerArray, queue_size=10)
         time.sleep(5)
         self.marker_pub = rospy.Publisher("graph_nodes", MarkerArray, queue_size=10)
-
-
 
     def create_marker(self, pose, category, node_id):
         """
@@ -97,7 +94,6 @@ class robokitRealtime:
         marker_array = MarkerArray()
         node_id = 0
 
-        # Iterate through graph nodes and add them to the marker array
         for node, data in self.graph.nodes(data=True):
             pose = data["pose"]
             category = data["category"]
@@ -109,7 +105,7 @@ class robokitRealtime:
         self.marker_pub.publish(marker_array)
 
     def run_network(self):
-        iter_=0
+        iter_ = 0
         while not rospy.is_shutdown():
             with lock:
                 if self.listener.im is None:
@@ -119,41 +115,33 @@ class robokitRealtime:
                 rgb_frame_id = self.listener.rgb_frame_id
                 rgb_frame_stamp = self.listener.rgb_frame_stamp
                 RT_camera, RT_base = self.listener.RT_camera, self.listener.RT_base
-            # depth_img = denormalize_depth_image(depth_image=depth_img, max_depth=20)
+            
             print("===========================================")
 
-            # bgr image
-            im = im_color.astype(np.uint8)[:, :, (2, 1, 0)]
-            img_pil = PILImg.fromarray(im)
+            # OpenCV 이미지를 PIL로 변환
+            img_pil = PILImg.fromarray(cv2.cvtColor(im_color, cv2.COLOR_BGR2RGB))
 
-          
-            bboxes, phrases, gdino_conf = self.gdino.predict(img_pil, self.text_prompt,0.55, 0.55)
+            bboxes, phrases, gdino_conf = self.gdino.predict(img_pil, self.text_prompt, 0.55, 0.55)
             bboxes, gdino_conf, phrases, flag = filter(bboxes, gdino_conf, phrases, 1, 0.8, 0.8, 0.8, 0.01, True)
             if flag:
                 continue
 
             if len(phrases) == 0:
-                print(f"skipping zero phrases \n")
+                print(f"Skipping zero phrases\n")
                 continue 
-            # Scale bounding boxes to match the original image size
-            w = im.shape[1]
-            h = im.shape[0]
+
+            w, h = img_pil.size
             image_pil_bboxes = self.gdino.bbox_to_scaled_xyxy(bboxes, w, h)
 
-            # logging.info("SAM prediction")
             image_pil_bboxes, masks = self.SAM.predict(img_pil, image_pil_bboxes)
 
-            # filter large boxes
             print(masks.shape)
-            image_pil_bboxes, index = filter_large_boxes(
-                image_pil_bboxes, w, h, threshold=0.5
-            )
+            image_pil_bboxes, index = filter_large_boxes(image_pil_bboxes, w, h, threshold=0.5)
             masks = masks[index]
-
-            ##############################################################
 
             mask_array = masks.cpu().numpy()
             phrase_iter_ = {"table": 0, "door": 0, "chair": 0}
+
             for i, mask in enumerate(mask_array):
                 mask = mask[0]
                 pose = pose_in_map_frame(RT_camera, RT_base, depth_img, segment=mask)
@@ -161,47 +149,45 @@ class robokitRealtime:
                 if pose is None:
                     continue
                 self.pose_list[phrases[i]], _is_nearby = is_nearby_in_map(
-                            self.pose_list[phrases[i]], pose, threshold=self.threshold[phrases[i]]
-                        )
+                    self.pose_list[phrases[i]], pose, threshold=self.threshold[phrases[i]]
+                )
                 if not _is_nearby:
-                    print(f"adding node")
+                    print(f"Adding node")
                     self.graph.add_node(
                         f"{phrases[i]}_{iter_}_{phrase_iter_[phrases[i]]}",
                         id=f"{phrases[i]}_{iter_}_{phrase_iter_[phrases[i]]}",
-                        pose = pose,
-                        robot_pose = RT_base.tolist(),
-                        category = phrases[i],
+                        pose=pose,
+                        robot_pose=RT_base.tolist(),
+                        category=phrases[i],
                     )
                     phrase_iter_[phrases[i]] += 1
                 self.pose_list[phrases[i]].append(pose)
                 
-            ##############################################################
-
             mask = combine_masks(masks[:, 0, :, :]).cpu().numpy()
             gdino_conf = gdino_conf[index]
             ind = np.where(index)[0]
             phrases = [phrases[i] for i in ind]
 
-            # logging.info("Annotate the scaled image with bounding boxes, confidence scores, and labels, and display")
+            # Bounding box 및 마스크 추가
             bbox_annotated_pil = annotate(
                 overlay_masks(img_pil, masks), image_pil_bboxes, gdino_conf, phrases
             )
-            # bbox_annotated_pil.show()
+
             im_label = np.array(bbox_annotated_pil)
 
-
-            # publish segmentation images
-            rgb_msg = ros_numpy.msgify(Image, im_label, "rgb8")
+            # OpenCV 형식으로 변환 후 ROS 메시지로 변환
+            rgb_msg = self.bridge.cv2_to_imgmsg(cv2.cvtColor(im_label, cv2.COLOR_RGB2BGR), encoding="bgr8")
             rgb_msg.header.stamp = rgb_frame_stamp
             rgb_msg.header.frame_id = rgb_frame_id
             self.image_pub.publish(rgb_msg)
+
             self.publish_graph_to_rviz()
             iter_ += 1
 
 
 if __name__ == "__main__":
-    # image listener
     robokit_instance = robokitRealtime()
     robokit_instance.run_network()
-    print(f"closing script! saving graph")
+    print(f"Closing script! Saving graph")
     save_graph_json(robokit_instance.graph, file="graph.json")
+

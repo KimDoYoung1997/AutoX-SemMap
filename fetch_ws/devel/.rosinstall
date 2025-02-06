@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /root/noetic_cuda_pt/AutoX-SemMap/fetch_ws/devel/setup.sh

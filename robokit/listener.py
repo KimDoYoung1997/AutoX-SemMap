@@ -24,9 +24,7 @@ lock = threading.Lock()
 
 
 class ImageListener:
-
     def __init__(self, camera="Fetch"):
-
         self.cv_bridge = CvBridge()
 
         self.im = None
@@ -48,7 +46,7 @@ class ImageListener:
         )
         self.lidar_pub = rospy.Publisher("/lidar_pc", PointCloud2, queue_size=10)
         msg = rospy.wait_for_message("/head_camera/rgb/camera_info", CameraInfo)
-        
+
         # update camera intrinsics
         intrinsics = np.array(msg.K).reshape(3, 3)
         self.intrinsics = intrinsics
@@ -65,9 +63,7 @@ class ImageListener:
         )
         ts.registerCallback(self.callback_rgbd)
 
-
     def callback_rgbd(self, rgb, depth):
-
         # get camera pose in base
         try:
             trans, rot = self.tf_listener.lookupTransform(
@@ -92,14 +88,12 @@ class ImageListener:
             RT_laser = None
             RT_base = None
 
+        # depth 이미지 변환
         if depth.encoding == "32FC1":
-            # depth_cv = self.cv_bridge.imgmsg_to_cv2(depth)
-            depth_cv = ros_numpy.numpify(depth)
+            depth_cv = self.cv_bridge.imgmsg_to_cv2(depth, desired_encoding="32FC1")
             depth_cv[np.isnan(depth_cv)] = 0
         elif depth.encoding == "16UC1":
-            # depth_cv = self.cv_bridge.imgmsg_to_cv2(depth).copy().astype(np.float32)
-            # depth_cv = depth_cv.copy().astype(np.float32)
-            depth_cv = ros_numpy.numpify(depth).copy().astype(np.float32)
+            depth_cv = self.cv_bridge.imgmsg_to_cv2(depth, desired_encoding="16UC1").astype(np.float32)
             depth_cv /= 1000.0
         else:
             rospy.logerr_throttle(
@@ -110,8 +104,9 @@ class ImageListener:
             )
             return
 
-        # im = self.cv_bridge.imgmsg_to_cv2(rgb, 'bgr8')
-        im = ros_numpy.numpify(rgb)
+        # RGB 이미지 변환
+        im = self.cv_bridge.imgmsg_to_cv2(rgb, desired_encoding="bgr8")
+
         with lock:
             self.im = im.copy()
             self.depth = depth_cv.copy()
@@ -124,17 +119,12 @@ class ImageListener:
             self.RT_base = RT_base
 
     def get_data_to_save(self):
-
         with lock:
             if self.im is None:
                 return None, None
             RT_camera = self.RT_camera.copy()
             RT_base = self.RT_base.copy()
-        return (
-            RT_camera,
-            RT_base,
-        )
-
+        return RT_camera, RT_base
 if __name__ == "__main__":
     # test_basic_img()
     rospy.init_node("image_listener")
