@@ -278,14 +278,14 @@ def is_nearby_in_map(pose_list, node_pose, threshold=0.5):
     """
 
     # 기존 객체가 없으면 바로 False 반환
-    # if len(pose_list) == 0:
-    #     print(f"pose_list 가 비어있어서 새로운 객체 추가 안함")
-    #     return pose_list, False
-
     if len(pose_list) == 0:
-        pose_list.append(node_pose)  # 여기를 수정!
-        print(f"pose_list가 비어있어서 첫 객체로 추가함")
+        print(f"pose_list 가 비어있어서 새로운 객체 추가 안함")
         return pose_list, False
+
+    # if len(pose_list) == 0:
+    #     pose_list.append(node_pose)  # 여기를 수정!
+    #     print(f"pose_list가 비어있어서 첫 객체로 추가함")
+    #     return pose_list, False
 
 
     # NumPy 배열로 변환

@@ -105,8 +105,8 @@ class Navigate:
 if __name__=="__main__":
     rospy.init_node('movebase_client_py')
     nav  = Navigate()
-    with np.load("surveillance_traj.npz") as traj_file:
+    with np.load("custom_traj.npz") as traj_file:
         surveillance_traj = traj_file["traj"]  
-    print(surveillance_traj)
+    print(f"surveillance_traj : {surveillance_traj}")
     nav.track_trajectory(waypoints=surveillance_traj)
     rospy.spin()

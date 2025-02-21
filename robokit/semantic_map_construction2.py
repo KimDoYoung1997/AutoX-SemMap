@@ -20,7 +20,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 lock = threading.Lock()
 from listener import ImageListener
 import time
-from utils import (
+from utils2 import (
     pose_in_map_frame,
     is_nearby_in_map,
     save_graph_json
@@ -47,7 +47,7 @@ class robokitRealtime:
         
         self.graph = Graph()
         self.pose_list = {"table":[], "chair":[], "door":[]}
-        self.threshold = {"table": 2, "chair":1.0, "door": 2}
+        self.threshold = {"table": 2, "chair":0.6, "door": 2}
         # self.marker_pub = rospy.Publisher("graph_nodes", MarkerArray, queue_size=10)
         # time.sleep(5)
         self.marker_pub = rospy.Publisher("graph_nodes", MarkerArray, queue_size=10)
@@ -188,7 +188,6 @@ class robokitRealtime:
             #         [1, 1, 0, 0, 0]]
             #     ]
             # ])
-            
             rospy.loginfo(f"masks.shape: {masks.shape}")
 
             # filter_large_boxes 함수 : Filter out large boxes from a list of bounding boxes based on a threshold.
@@ -202,7 +201,8 @@ class robokitRealtime:
             phrase_iter_ = {"table": 0, "door": 0, "chair": 0}  # 왜 있는지 모르겠음.
             # 아래 for 반복문은 검출된 각 객체의 3D 위치를 계산하고, 이를 그래프에 노드로 추가하는 부분입니다
             for i, mask in enumerate(mask_array):
-                
+                rospy.loginfo(f"22222222222222222222222222222222222222222222222222222222222222")
+  
                 # true_indices = np.argwhere(mask[0])  # [y, x] 좌표 반환
                 # rospy.loginfo(f"Mask {i} True pixels at: {true_indices}")
                 # rospy.loginfo(f"Number of True pixels in mask[{i}]: {len(true_indices)}")
@@ -239,7 +239,7 @@ class robokitRealtime:
                     )
                     phrase_iter_[phrases[i]] += 1
                     # 3. 새로운 객체일 때만 pose_list에 추가
-                    # self.pose_list[phrases[i]].append(pose)
+                self.pose_list[phrases[i]].append(pose)
                 rospy.loginfo(f"2. phrases[i]: {phrases[i]}")
                 # rospy.logerr(f"2.self.pose_list[phrases[i]]: {self.pose_list[phrases[i]]}")
                 rospy.logwarn(f"2. len(self.pose_list[phrases[i]]): {len(self.pose_list[phrases[i]])}")

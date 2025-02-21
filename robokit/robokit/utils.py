@@ -237,6 +237,8 @@ def combine_masks(gt_masks):
 
 def filter_large_boxes(boxes, w, h, threshold=0.5):
     """
+    단순히 바운딩 박스의 크기만을 기준으로 필터링하는 함수입니다.
+    면적이 이미지의 50%(기본값) 이상인 박스 제거
     Filter out large boxes from a list of bounding boxes based on a threshold.
 
     Args:
@@ -249,10 +251,12 @@ def filter_large_boxes(boxes, w, h, threshold=0.5):
         Tuple[torch.Tensor, torch.Tensor]: Filtered bounding boxes and corresponding indices.
     """
     try:
-        x1 = boxes[:, 0]
-        y1 = boxes[:, 1]
-        x2 = boxes[:, 2]
-        y2 = boxes[:, 3]
+        x1 = boxes[:, 0]  # 왼쪽 상단 x 좌표
+        y1 = boxes[:, 1]  # 왼쪽 상단 y 좌표
+        x2 = boxes[:, 2]  # 오른쪽 하단 x 좌표
+        y2 = boxes[:, 3]  # 오른쪽 하단 y 좌표
+        
+        # 각 박스의 면적 계산
         area = (x2 - x1) * (y2 - y1)
         index = area < (w * h) * threshold
         return boxes[index], index.cpu()
@@ -260,6 +264,37 @@ def filter_large_boxes(boxes, w, h, threshold=0.5):
     except Exception as e:
         logging.error(f"Error filtering large boxes: {e}")
         raise e
+
+
+# # 예시: 3개의 바운딩 박스가 있다고 가정
+# boxes = torch.tensor([
+#     [100, 150, 300, 400],  # 첫 번째 박스 [x1, y1, x2, y2]
+#     [50,  200, 150, 350],  # 두 번째 박스 [x1, y1, x2, y2]
+#     [400, 100, 500, 300]   # 세 번째 박스 [x1, y1, x2, y2]
+# ])
+
+# # boxes의 shape: [3, 4]
+# # 3: 바운딩 박스의 개수
+# # 4: 각 박스의 좌표 (x1, y1, x2, y2)
+
+# # 모든 박스의 x1 좌표 추출
+# x1 = boxes[:, 0]  # [100, 50, 400]
+
+# # 모든 박스의 y1 좌표 추출
+# y1 = boxes[:, 1]  # [150, 200, 100]
+
+# # 모든 박스의 x2 좌표 추출
+# x2 = boxes[:, 2]  # [300, 150, 500]
+
+# # 모든 박스의 y2 좌표 추출
+# y2 = boxes[:, 3]  # [400, 350, 300]
+
+# # 각 박스의 면적 계산
+# area = (x2 - x1) * (y2 - y1)
+# # = ([300-100, 150-50, 500-400] * [400-150, 350-200, 300-100])
+# # = ([200, 100, 100] * [250, 150, 200])
+# # = [50000, 15000, 20000]
+
 
 
 def save_mask(masks, output_path, image_path, phrases, conf):
@@ -327,6 +362,10 @@ def save_mask(masks, output_path, image_path, phrases, conf):
 def filter(bboxes, conf_list, phrases ,conf_bound, yVal, precentWidth=0.5, precentHeight=0.5, precentArea=0.05, filterChoice=True):
 
     """
+    filter_large_boxes 함수에 비해 조금 더 복잡한 조건으로 필터링함
+    크기(너비, 높이, 면적), 위치(y좌표), 신뢰도 점수 등 고려
+    객체 클래스별 다른 기준 적용 (예: 문에 대한 특별 처리)
+    
     Filters out false positives from detections:
     - Noise from floor 
     - Detections of the entire image (Very large, false detections)
@@ -394,13 +433,21 @@ def filter(bboxes, conf_list, phrases ,conf_bound, yVal, precentWidth=0.5, prece
             phrases_np = phrases_np[mask.cpu().numpy()]
 
         # Filters out images with detections at all
+        # print(f"============= conf_list.size(dim=0): {conf_list.size(dim=0)} =============")
         if conf_list.size(dim=0) == 0:
+            # print(f"============= conf_list.size(dim=0): {conf_list.size(dim=0)} , Return True =============")
             return bboxes, conf_list, phrases_np.tolist(), True
 
-        # Creates an upper bound for confidence
+        # # Creates an upper bound for confidence
+        # print(f"conf_bound: {conf_bound}")
+        # for i, conf in enumerate(conf_list):
+        #     print(f"conf[{i}]: {conf}")        
+        # print(f"============= any(conf >= conf_bound for conf in conf_list): {any(conf >= conf_bound for conf in conf_list)} =============")
         if any(conf >= conf_bound for conf in conf_list):
+            print(f"============= conf >= conf_bound , Return True =============")
             return bboxes, conf_list, phrases_np.tolist(), True 
 
+        print(f"ETC : Return False")
         return bboxes, conf_list, phrases_np.tolist(), False
 
     # If filterChoice is False, skip the filtering. Flag is returned as False if there are detections

@@ -1,18 +1,16 @@
 #!/usr/bin/env python
 
-"""Test GroundingSAM on ros images"""
-
+"""Test GroundingSAM on ros images (cv2 & cv_bridge version)"""
 
 import threading
 import numpy as np
 import rospy
+import cv2
 from PIL import Image as PILImg
+from cv_bridge import CvBridge, CvBridgeError
 
-import ros_numpy
 import networkx as nx
 from networkx import Graph
-
-
 from sensor_msgs.msg import Image
 from robokit.perception import GroundingDINOObjectPredictor, SegmentAnythingPredictor
 from robokit.utils import annotate, overlay_masks, combine_masks, filter_large_boxes, filter
@@ -20,7 +18,6 @@ from shapely.geometry import Point, Polygon
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
-lock = threading.Lock()
 from listener import ImageListener
 import time
 from utils import (
@@ -31,42 +28,37 @@ from utils import (
     get_fov_points_in_map
 )
 
-class robokitRealtime:
+lock = threading.Lock()
 
+class robokitRealtime:
     def __init__(self):
-        # initialize a node
+        # ROS 노드 초기화
         rospy.init_node("seg_rgb")
 
         self.listener = ImageListener(camera="Fetch")
+        self.bridge = CvBridge()
 
         self.counter = 0
         self.output_dir = "output/real_world"
 
-        # initialize network
+        # 네트워크 초기화
         self.text_prompt = "table . door . chair ."
         self.gdino = GroundingDINOObjectPredictor()
         self.SAM = SegmentAnythingPredictor()
-        self.threshold = {"table": 2, "chair":0.6
-                          , "door": 2}
+        self.threshold = {"table": 2, "chair": 0.6, "door": 2}
 
         self.image_pub = rospy.Publisher("seg_image", Image, queue_size=10)
-        # self.read_semantic_data()
         self.graph = read_graph_json("graph.json")
-        self.pose_list = {"table":[], "chair":[], "door":[]}
+        self.pose_list = {"table": [], "chair": [], "door": []}
         self.pause = 0
         rospy.Subscriber("/yes_no", Int32, self.pause_callback)
         time.sleep(5)
         self.marker_pub = rospy.Publisher("graph_nodes", MarkerArray, queue_size=10)
 
-    
     def pause_callback(self, data):
         self.pause = data.data
 
-
     def create_marker(self, pose, category, node_id):
-        """
-        Creates a Marker for a graph node to be displayed in RViz.
-        """
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = rospy.Time.now()
@@ -76,54 +68,31 @@ class robokitRealtime:
         marker.action = Marker.ADD
         marker.pose.position.x = pose[0]
         marker.pose.position.y = pose[1]
-        marker.pose.position.z = pose[2] * 0  
+        marker.pose.position.z = 0
         marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.3  
-        marker.scale.y = 0.3
-        marker.scale.z = 0.3
-        marker.color.a = 1.0  
-        # Color based on category
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.3
+        marker.color.a = 1.0
+
         if category == "table":
-            marker.color.r = 0.0
-            marker.color.g = 0.0
-            marker.color.b = 1.0
+            marker.color.r, marker.color.g, marker.color.b = 0.0, 0.0, 1.0
         elif category == "chair":
-            marker.color.r = 0.0
-            marker.color.g = 1.0
-            marker.color.b = 0.0
+            marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
         elif category == "door":
-            marker.color.r = 1.0
-            marker.color.g = 0.0
-            marker.color.b = 0.0
+            marker.color.r, marker.color.g, marker.color.b = 1.0, 0.0, 0.0
 
         return marker
-    
+
     def publish_graph_to_rviz(self):
-        """
-        Publishes the graph nodes as markers in RViz.
-        """
         marker_array = MarkerArray()
         node_id = 0
-
-        # Iterate through graph nodes and add them to the marker array
         for node, data in self.graph.nodes(data=True):
-            pose = data["pose"]
-            category = data["category"]
-
-            # Create a marker for each node
-            marker = self.create_marker(pose, category, node_id)
+            marker = self.create_marker(data["pose"], data["category"], node_id)
             marker_array.markers.append(marker)
             node_id += 1
-
-        # Publish the marker array
         self.marker_pub.publish(marker_array)
 
     def run_network(self):
-        # 1. get fov, get the nodes.
-        # 2. get the detected poses. 
-        # 3. for each node in fov, check if a detection exist or not nearby. if not, remove the node.
-        # 4. for each detection, check if there is a nearby in graph. if not add it to the graph.
-        iter_=0
+        iter_ = 0
         while not rospy.is_shutdown():
             with lock:
                 if self.listener.im is None:
@@ -133,136 +102,71 @@ class robokitRealtime:
                 rgb_frame_id = self.listener.rgb_frame_id
                 rgb_frame_stamp = self.listener.rgb_frame_stamp
                 RT_camera, RT_base = self.listener.RT_camera, self.listener.RT_base
-            # depth_img = denormalize_depth_image(depth_image=depth_img, max_depth=20)
-            print("===========================================")
 
-            # bgr image
-            im = im_color.astype(np.uint8)[:, :, (2, 1, 0)]
+            print("===========================================")
+            im = cv2.cvtColor(im_color, cv2.COLOR_BGR2RGB)
             img_pil = PILImg.fromarray(im)
 
-         
-            bboxes, phrases, gdino_conf = self.gdino.predict(img_pil, self.text_prompt,0.55, 0.55)
+            bboxes, phrases, gdino_conf = self.gdino.predict(img_pil, self.text_prompt, 0.55, 0.55)
             bboxes, gdino_conf, phrases, flag = filter(bboxes, gdino_conf, phrases, 1, 0.8, 0.8, 0.8, 0.01, True)
+
             if flag:
                 fov_points = get_fov_points_in_map(depth_img, RT_camera, RT_base)
                 fov = Polygon(fov_points)
-                nodes_in_fov = {}
-                for node, data in self.graph.nodes(data=True):
-                    if "new" in node:
-                        continue
-                    pose_  = data["pose"]
-                    pose_[2]=0
-                    point = Point(pose_)
-                    
-                    if fov.contains(point):
-                        nodes_in_fov[node] = data["category"]
-                for nodes in nodes_in_fov.keys():
-                    print(f"node is being removed {nodes}")
-                    self.graph.remove_node(nodes)
+                nodes_in_fov = {node: data["category"] for node, data in self.graph.nodes(data=True)
+                                if fov.contains(Point(data["pose"]))}
+                for node in nodes_in_fov:
+                    print(f"node is being removed {node}")
+                    self.graph.remove_node(node)
                 continue
 
             if len(phrases) == 0:
                 print(f"skipping zero phrases \n")
-                continue 
-            # Scale bounding boxes to match the original image size
-            w = im.shape[1]
-            h = im.shape[0]
+                continue
+
+            w, h = im.shape[1], im.shape[0]
             image_pil_bboxes = self.gdino.bbox_to_scaled_xyxy(bboxes, w, h)
-
-            # logging.info("SAM prediction")
             image_pil_bboxes, masks = self.SAM.predict(img_pil, image_pil_bboxes)
-
-            # filter large boxes
-            print(masks.shape)
-            image_pil_bboxes, index = filter_large_boxes(
-                image_pil_bboxes, w, h, threshold=0.5
-            )
+            image_pil_bboxes, index = filter_large_boxes(image_pil_bboxes, w, h, threshold=0.5)
             masks = masks[index]
 
-            ##############################################################
-            detected_poses = {"door":[],"chair":[],"table":[]}
-            mask_array = masks.cpu().numpy()
-            for i, mask in enumerate(mask_array):
-                mask = mask[0]
-                pose = pose_in_map_frame(RT_camera, RT_base, depth_img, segment=mask)
-                if pose is None:
-                    continue
-                detected_poses[phrases[i]].append(pose)
-
-
-            fov_points = get_fov_points_in_map(depth_img, RT_camera, RT_base)
-            fov = Polygon(fov_points)
-            nodes_in_fov = {}
-            for node, data in self.graph.nodes(data=True):
-                if "new" in node:
-                    continue
-                pose_  = data["pose"]
-                pose_[2]=0
-                point = Point(pose_)
-                
-                if fov.contains(point):
-                    if len(detected_poses[data["category"]]) ==0:
-                        nodes_in_fov[node] = data["category"]
-                    elif np.any(np.linalg.norm(np.array(detected_poses[data["category"]])-np.array(pose_), axis =1)) < self.threshold[data["category"]]:
-                        continue
-                    else:
-
-                        nodes_in_fov[node] = data["category"]
-
-
-            for nodes in nodes_in_fov.keys():
-                self.graph.remove_node(nodes)
-                print(f"node is being removed {nodes}")
+            detected_poses = {"door": [], "chair": [], "table": []}
+            for i, mask in enumerate(masks.cpu().numpy()):
+                pose = pose_in_map_frame(RT_camera, RT_base, depth_img, segment=mask[0])
+                if pose is not None:
+                    detected_poses[phrases[i]].append(pose)
 
             phrase_iter_ = {"table": 0, "door": 0, "chair": 0}
-            for i, mask in enumerate(mask_array):
-                mask = mask[0]
-                pose = pose_in_map_frame(RT_camera, RT_base, depth_img, segment=mask)
-                if pose is None:
-                    continue
-                self.pose_list[phrases[i]], _is_nearby = is_nearby_in_map(
-                            self.pose_list[phrases[i]], pose, threshold=self.threshold[phrases[i]]
-                        )
-                if not _is_nearby:
-                    print(f"adding node")
-                    self.graph.add_node(
-                        f"new_{phrases[i]}_{iter_}_{phrase_iter_[phrases[i]]}",
-                        id=f"new_{phrases[i]}_{iter_}_{phrase_iter_[phrases[i]]}",
-                        pose = pose,
-                        robot_pose = RT_base.tolist(),
-                        category = phrases[i],
-                    )
-                    phrase_iter_[phrases[i]] += 1
-                self.pose_list[phrases[i]].append(pose)
-                
-            ##############################################################
+            for category in detected_poses:
+                for pose in detected_poses[category]:
+                    _, is_nearby = is_nearby_in_map(self.pose_list[category], pose, threshold=self.threshold[category])
+                    if not is_nearby:
+                        node_id = f"new_{category}_{iter_}_{phrase_iter_[category]}"
+                        self.graph.add_node(node_id, id=node_id, pose=pose, robot_pose=RT_base.tolist(), category=category)
+                        phrase_iter_[category] += 1
+                    self.pose_list[category].append(pose)
 
-            mask = combine_masks(masks[:, 0, :, :]).cpu().numpy()
+            mask_combined = combine_masks(masks[:, 0, :, :]).cpu().numpy()
             gdino_conf = gdino_conf[index]
-            ind = np.where(index)[0]
-            phrases = [phrases[i] for i in ind]
-
-            # logging.info("Annotate the scaled image with bounding boxes, confidence scores, and labels, and display")
-            bbox_annotated_pil = annotate(
-                overlay_masks(img_pil, masks), image_pil_bboxes, gdino_conf, phrases
-            )
-            # bbox_annotated_pil.show()
+            phrases = [phrases[i] for i in np.where(index)[0]]
+            bbox_annotated_pil = annotate(overlay_masks(img_pil, masks), image_pil_bboxes, gdino_conf, phrases)
             im_label = np.array(bbox_annotated_pil)
 
+            try:
+                rgb_msg = self.bridge.cv2_to_imgmsg(im_label, encoding="rgb8")
+                rgb_msg.header.stamp = rgb_frame_stamp
+                rgb_msg.header.frame_id = rgb_frame_id
+                self.image_pub.publish(rgb_msg)
+            except CvBridgeError as e:
+                rospy.logerr(f"CVBridge Error: {str(e)}")
 
-
-            # publish segmentation images
-            rgb_msg = ros_numpy.msgify(Image, im_label, "rgb8")
-            rgb_msg.header.stamp = rgb_frame_stamp
-            rgb_msg.header.frame_id = rgb_frame_id
-            self.image_pub.publish(rgb_msg)
             self.publish_graph_to_rviz()
             iter_ += 1
 
 
 if __name__ == "__main__":
-    # image listener
     robokit_instance = robokitRealtime()
     robokit_instance.run_network()
     print(f"closing script! saving graph")
     save_graph_json(robokit_instance.graph, file="graph_updated.json")
+
